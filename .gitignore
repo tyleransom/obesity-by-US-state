@@ -1,0 +1,64 @@
+# ---------------------------------------------------------------------------
+# Raw BRFSS microdata (~22 GB) — redownloaded by src/scrape/fetch_brfss.R.
+# Never tracked: it is CDC's to distribute, and it is far past any sane repo
+# size. data/raw/ is also read-only after download by convention.
+# ---------------------------------------------------------------------------
+data/raw/
+
+# ---------------------------------------------------------------------------
+# Local working notes, task specs, and agent instructions — not part of the
+# published resource.
+# ---------------------------------------------------------------------------
+CLAUDE.md
+.claude/
+prompt.md
+notes.md
+NOTES.md
+*.notes.md
+notes/
+TODO.md
+todo.md
+scratch/
+sandbox/
+*.scratch
+*.draft.md
+
+# ---------------------------------------------------------------------------
+# Analysis. The repo publishes the panel and how it was built, not results
+# derived from it. Keep substantive analysis local.
+# ---------------------------------------------------------------------------
+src/analysis/
+docs/within_between.md
+
+# ---------------------------------------------------------------------------
+# R
+# ---------------------------------------------------------------------------
+.Rproj.user/
+.Rhistory
+.RData
+.Ruserdata
+*.Rproj
+.Renviron
+renv/library/
+renv/local/
+renv/staging/
+renv/python/
+*.rds
+*.Rout
+
+# ---------------------------------------------------------------------------
+# Output formats the pipeline does not produce, but that tend to accumulate
+# ---------------------------------------------------------------------------
+*.pdf
+*.png
+*.log
+
+# ---------------------------------------------------------------------------
+# OS / editor
+# ---------------------------------------------------------------------------
+.DS_Store
+Thumbs.db
+*~
+*.swp
+.vscode/
+.idea/
