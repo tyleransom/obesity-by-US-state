@@ -124,7 +124,7 @@ Underlying microdata are collected and published by the CDC Behavioral Risk Fact
 Surveillance System. This repository redistributes no CDC data — only estimates derived
 from it and the code that derives them. Errors in the panel are mine, not CDC's.
 
-I heavily used Claude Code (Opus 5 model) to produce this product and am distributing it after verifying results look reasonable.
+I heavily used Claude Code (Opus 5 model) to produce this product and am distributing it after verifying results match other publications of the same underlying data (e.g. [Mokdad et al., 2001, JAMA](https://jamanetwork.com/journals/jama/fullarticle/195663)).
 
 ## License
 
