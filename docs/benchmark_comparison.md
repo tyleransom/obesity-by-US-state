@@ -1,6 +1,6 @@
 # Comparison against published BRFSS estimates
 
-Generated 2026-08-14.
+Generated 2026-08-17.
 
 Benchmark: `data/reference/published_state_prevalence.csv`.
 

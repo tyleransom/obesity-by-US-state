@@ -50,13 +50,14 @@ compare <- function() {
   # Panel prevalence is a proportion; the benchmark is a percentage.
   j <- panel %>%
     mutate(constructed_prev = prev_obese * 100,
-           constructed_se   = se * 100) %>%
+           constructed_se   = se_obese * 100) %>%
     inner_join(ref, by = c("state_name", "year")) %>%
     mutate(
       diff_pp = constructed_prev - published_prev,
       # Is the published value inside our 95% interval? A well-constructed
       # panel should cover the benchmark for most states.
-      covered = published_prev >= ci_lower * 100 & published_prev <= ci_upper * 100,
+      covered = published_prev >= ci_lower_obese * 100 &
+                published_prev <= ci_upper_obese * 100,
       # How many of our own standard errors away is the benchmark?
       z = diff_pp / constructed_se
     )

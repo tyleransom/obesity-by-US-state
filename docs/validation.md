@@ -1,6 +1,6 @@
 # BRFSS state obesity panel — external validation
 
-Generated 2026-08-14.
+Generated 2026-08-17.
 
 > **Benchmark provenance.** The NHANES and CDC-map values in this report
 > are constants transcribed into `src/cleaning/validate.R` from published

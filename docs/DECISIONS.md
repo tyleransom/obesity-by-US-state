@@ -167,7 +167,8 @@ cannot be located are not screened at all (this occurs in no year of
 1990–2023 — every year resolved an age variable).
 
 **Why.** BRFSS is an adult survey by design, but the raw `AGE` variable
-carries 7 = "don't know" and 9 = "refused" in the pre-2019 files. Both fall
+carries 7 = "don't know" and 9 = "refused" through 2012, the last year CDC
+ships raw `AGE` (2013+ files start at 18). Both fall
 below 18 and are therefore dropped by the same comparison — which is the
 intended outcome, since neither can be confirmed to be an adult.
 
@@ -286,7 +287,7 @@ composition changes that look like distributional changes.
 
 ## 11. National aggregate is recomputed, not averaged
 
-**Decision.** The national figure in `validation.md` is recomputed from the
+**Decision.** The national figure in `validation.md` is computed from the
 microdata via `svymean()` over the full design, not averaged across the
 state panel.
 
@@ -296,6 +297,24 @@ national estimate is the correct one. (By contrast, the cross-state moments
 in `diagnostics.md` §3 *are* unweighted across states — deliberately, since
 the object of interest there is the distribution across states, where each
 state is one observation.)
+
+**Where it is computed.** `build_panel.R`, from the same design object the
+state estimates come from, written to `data/cleaned/national_prevalence.csv`.
+`validate.R` reads that file. It previously built its own design for every
+year to produce these numbers, which meant reconstructing all 34 designs a
+second time — 3.5 to 5 minutes apiece for the post-2011 files — to reproduce
+figures `build_panel.R` already had in hand. Computing both from one design
+object is also strictly stronger than computing them from two identical ones:
+the national figure and the state figures cannot drift apart.
+
+The file is **merged, not overwritten**, because `build_panel()` is routinely
+run on a subset of years; writing it wholesale would delete the other 31 rows.
+`validate.R` retains a recompute path for years missing from the file, and
+warns when it uses it.
+
+**Scope.** This file carries prevalence only, not the four means added in §16.
+It exists to support the NHANES comparison in `validation.md`, which is a
+prevalence comparison.
 
 ---
 
@@ -378,3 +397,211 @@ splitting the sample at 2011.
 **Alternative not taken.** Nonresponse reweighting within state-year cells.
 It would require an assumption about missingness that the data cannot test,
 and it would obscure a trend the user should see directly.
+
+---
+
+## 16. The panel reports four means alongside prevalence
+
+**Decision.** `state_obesity_panel.csv` carries weighted state-year means of
+BMI, height (inches), weight (kilograms) and age, each with its design-based
+standard error, next to `prev_obese`. All five are estimated in a single
+`svyby()` call on one design and one analytic sample, so a cell's mean height
+and its prevalence describe exactly the same respondents.
+
+**Why one sample.** The obvious alternative — estimate each measure on
+whatever records happen to carry it — buys a few percent more observations
+for height and weight at the cost of making the columns non-comparable within
+a row. Mean BMI would then be computed over a different set of people than
+mean weight, and the identity linking them would not hold even approximately.
+The analytic sample is defined once (18+, not pregnant, plausible BMI,
+positive final weight, panel state) and every column obeys it.
+
+**Listwise deletion is a no-op here, and that was verified rather than
+assumed.** `svymean(na.rm = TRUE)` over several variables deletes a record
+missing *any* of them. On this sample it deletes **zero records in all 34
+years**: `keep` already requires a usable BMI, which requires both a
+plausible height and a plausible weight, and the 18+ screen already requires
+an age, so every record that reaches the estimator is complete on all five
+measures by construction.
+
+`available_measures()` is therefore an assertion, not a repair. It admits a
+measure only if it is complete on the analytic sample and writes `NA` for
+that year otherwise. It earns its place as a guard on future edits: a measure
+with genuine item nonresponse — income, smoking status — added carelessly to
+`PANEL_MEASURES` would silently move every other estimate in the same
+`svyby()` call, `prev_obese` included. Failing loudly beats that. The only
+live case it covers today is a year falling back to CDC's precomputed
+`_BMI*`, which carries no height or weight to report; no year currently does.
+
+**The real selection question, and its size.** The analytic sample is
+conditioned on having reported height and weight, and that condition is not
+free: it drops 2.6% of eligible adults in 1990 and 10.8% by 2022 (§15). So
+`mean_age` is the mean age of adults who answered the height/weight
+questions, not of all adults. Measured, that selection is small — mean age
+among the retained differs from mean age among all eligible adults by −0.12
+years in 1990, +0.06 in 2010, and +0.16 in 2022, its largest value in the
+series and in the year with the worst nonresponse. `diagnostics.md` §5
+reports it for every year as `age_selection_yr`.
+
+This bounds the threat for age. It says nothing about selection on *weight*,
+which is by construction unobservable for the people who declined to report
+it, and which is the direction that would actually bias `prev_obese`. That
+remains uncorrected and flagged (§15).
+
+**Alternative not taken.** Estimating `mean_age` on all eligible adults
+rather than on the BMI-complete sample, which would use ~10% more records by
+the end of the series. Rejected because it would make `mean_age` describe a
+different population than every other column in the same row — breaking the
+one property that makes this panel usable for compositional questions
+("is rising obesity explained by an aging sample?") — in exchange for
+correcting a discrepancy measured at 0.16 years.
+
+**Height and weight are blanked wherever BMI is.** `derive_anthro()` sets
+both to `NA` whenever the BMI they imply is missing. Without this, a record
+with a plausible height and an implausible weight would contribute to
+`mean_height_in` but not to `mean_bmi`.
+
+**Units.** Height in inches and weight in kilograms — the units the pipeline
+computes BMI in, so the reported means are the ones that actually enter the
+BMI. Pounds are `mean_weight_kg / 0.45359237`; centimetres are
+`mean_height_in * 2.54`. Note that a mean of a ratio is not the ratio of
+means: `mean_bmi` is not recoverable from `mean_height_in` and
+`mean_weight_kg`.
+
+**Alternative not taken.** Reporting medians or the full BMI distribution
+(quantiles, share overweight). Defensible, and quantiles would be more robust
+than the mean for a right-skewed variable, but `svyquantile` by state-year is
+substantially more expensive and the request was for means. Nothing in the
+construction blocks adding them later.
+
+---
+
+## 16a. Age is top-coded at 80 in every year
+
+**Decision.** `mean_age` is computed on `pmin(age, 80)` for all years, not on
+raw age.
+
+**Why.** Raw `AGE` (1990–2012) is uncapped; from 2013 CDC ships only
+`_AGE80`, which is collapsed above 80. Averaging the two as they come would
+plant a spurious drop in mean age at 2013 that is purely a change in the
+top-code — the same class of artifact as the `_BMI*` rounding in §1a.
+Applying the 2013+ top-code to the earlier years puts both on one scale.
+This is a real cost: the pre-2013 files could have supported an uncapped mean
+and no longer do. Comparability across the series was judged worth more than
+precision in the right tail, consistent with the rule that construction must
+be identical across years.
+
+**What this does not fix.** `_AGE80` is *imputed* for records that did not
+give an age, while raw `AGE` was not — records that would have been screened
+out pre-2013 are screened in afterwards (§4). Top-coding does nothing about
+that, and it is not corrected. `diagnostics.md` §6 flags 2013 so a level
+shift there is read as a measurement change first.
+
+**Sentinels.** Raw `AGE` codes 7 = don't know and 9 = refused, in every year
+it appears (1990–2012). Both are
+below 18 and are removed by the adult screen before any mean is taken, so
+neither reaches `mean_age`. The value 99 is a legitimate coded age in those
+files (the observed frequencies decline monotonically through 98 and then
+jump at 99, consistent with a top-code at 99 rather than a missing-value
+flag); top-coding at 80 makes the question moot either way.
+
+**Alternative not taken.** Reporting mean age uncapped before 2013 and
+capped after, with a flag column. Rejected: it puts the burden of the
+correction on every downstream user and invites exactly the spliced series
+this project exists to avoid.
+
+---
+
+## 17. Confidence intervals are reported for the prevalence only
+
+**Decision.** `ci_lower_obese` / `ci_upper_obese` accompany `prev_obese`.
+The four means carry standard errors but no interval columns.
+
+**Why.** The prevalence is the quantity benchmarked against published
+estimates in `benchmark_comparison.md`, and the coverage check there needs
+the interval. For the means the interval is `estimate ± 1.96 × se` under the
+same normal approximation documented in §9, and eight more columns of
+arithmetic on a column already present adds width without information.
+
+---
+
+## 18. The percentile panel, and why it has no standard errors
+
+**Decision.** `data/cleaned/state_bmi_percentiles.csv` reports the weighted
+BMI distribution within each state-year at percentiles 1 through 99 — one row
+per state × year × percentile, roughly 100× the rows of the mean panel. It
+carries a point estimate and `n_unweighted`, and **no standard error**.
+
+**Why the file exists.** Obesity prevalence is the mass above a single cut
+(BMI 30). It cannot distinguish a uniform rightward shift of the BMI
+distribution from a stretch concentrated in the upper tail, and those imply
+very different things about what changed — yet both can trace out the same
+prevalence path. The percentile panel is what makes that distinction
+visible; `diagnostics.md` §7 does the comparison.
+
+**Why 1:99 and not 1:100.** The 100th percentile is the sample maximum, and
+this pipeline caps BMI at 60 (§3). p100 would therefore report our own
+plausibility filter back to us in nearly every cell rather than a feature of
+the data. p0 is the minimum and is an artifact of the BMI ≥ 12 floor for the
+same reason. Both are omitted deliberately. The grid is a one-line change if
+a different one is wanted; nothing downstream assumes 99.
+
+**How the point estimates are computed.** The smallest observed BMI whose
+cumulative weight share reaches p, using the same final weights and the same
+analytic sample as every other column in the project. This is *exactly* what
+`svyquantile()` returns as a point estimate, not an approximation, and it is
+not an unweighted quantile.
+
+**Verification.** For 1990 the identity was checked exhaustively — all 45
+states × 99 percentiles, maximum difference **0**. It could not be checked
+exhaustively for a post-2011 year: `svyquantile()` across all 51 states of
+2013 ran over two hours and 45 minutes without completing. Later years are
+therefore verified on a probe of four deliberately varied states (California,
+Texas, Wyoming, DC), covering both sides of the 2011 break and including 2001,
+the year that breaks the pattern on three other variables (§1):
+
+| Year | Scope | `svyquantile()` time | max &#124;difference&#124; |
+| --- | --- | --- | --- |
+| 1990 | all 45 states × 99 pctiles | 80 s | **0** |
+| 2001 | 4 states × 99 pctiles | 86 s | **0** |
+| 2013 | 4 states × 99 pctiles | 1,079 s | **0** |
+| 2019 | 4 states × 99 pctiles | 948 s | **0** |
+
+The probe script is `src/cleaning/verify_percentiles.R`; `run_all.R` does not
+source it, since it is a check on the pipeline rather than a stage of it.
+
+**Why no standard error.** The timings in that table *are* the reason. Four
+states of 2013 cost 1,079 seconds — roughly 3.8 hours for that single year's
+51 states — against 0.03 seconds to compute the entire year directly.
+`svyquantile()` spends essentially all of it on variance and
+confidence-interval machinery, which it runs even when called with
+`se = FALSE`. Design-based SEs for 99 percentiles × 51 states × 34 years are
+therefore not a matter of a slower run; on this evidence they are infeasible
+in this pipeline's structure, and would have to be obtained a different way
+if they were ever needed.
+
+Note the timings are driven by the post-2011 sample sizes, not by the year
+label: 2001 costs about what 1990 does, while 2013 and 2019 cost an order of
+magnitude more.
+
+This is a real limitation and is not hidden: the percentile file supports
+description of the distribution's shape, not inference about it. Anyone wanting to
+test whether a percentile moved significantly between two years needs the
+design-based variance, and should compute it with `svyquantile()` for the
+specific cells in question rather than assume the point estimates come with
+uncertainty attached. `n_unweighted` is reported on every row so thin cells
+are visible.
+
+**Alternative not taken.** Reporting deciles or a handful of percentiles
+(10/25/50/75/90) with full design-based SEs, which would have been affordable.
+Rejected because the fine grid is what makes the file useful for
+distributional work — reconstructing a CDF, comparing shapes across states,
+locating where in the distribution a change occurred — and that use does not
+depend on per-percentile inference. The coarse-grid-with-SEs version remains
+available to anyone who wants it via `svyquantile()`.
+
+**Consistency check.** The share of a state-year's 99 percentiles at or above
+BMI 30 tracks `prev_obese` from the mean panel with correlation 0.988 and mean
+absolute difference 0.004. The two files are built from the same records and
+the same weights; the small gap is the 1-percentage-point granularity of the
+grid, not a disagreement.

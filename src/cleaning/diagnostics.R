@@ -10,6 +10,10 @@
 #      IQR) -- bears on whether the increase is a common additive shift.
 #   4. Regression of change in prevalence on baseline prevalence, run
 #      separately within the pre- and post-2011 regimes, robust SEs.
+# Plus two blocks the spec did not ask for: BMI item nonresponse by year, and
+# a cross-state summary of the panel's other measures (mean BMI, height,
+# weight, age), which carry the 2011 break too and, for age, a second one at
+# 2013.
 
 source(here::here("src", "common.R"))
 source(here::here("src", "scrape", "fetch_brfss.R"))
@@ -38,7 +42,7 @@ diag_sample_size <- function(panel) {
   thin <- panel %>%
     filter(n_unweighted < MIN_CELL_N) %>%
     arrange(n_unweighted) %>%
-    select(state_name, year, n_unweighted, prev_obese, se)
+    select(state_name, year, n_unweighted, prev_obese, se_obese)
 
   by_year <- panel %>%
     group_by(year) %>%
@@ -166,26 +170,114 @@ diag_convergence <- function(panel) {
 # who decline to report height/weight differ systematically from those who
 # do, a rising nonresponse rate moves measured prevalence even when true
 # prevalence is flat. Read from the parsed caches, not the panel.
+#
+# BMI here is the pipeline's OWN computed BMI, not CDC's precomputed _BMI*.
+# This block previously measured nonresponse on _BMI*, which the panel does
+# not use (DECISIONS.md §1a) and which is populated on a slightly different
+# set of records -- so it was reporting a nonresponse rate the panel never
+# actually suffered.
+#
+# `age_selection_yr` sizes the consequence directly: mean age among records
+# that survive the BMI screen minus mean age among all eligible adults. It is
+# the answer to "does losing 11% of records by 2022 change who is in the
+# sample?" for the one characteristic the panel measures.
 diag_nonresponse <- function(years) {
   rows <- list()
   for (y in years) {
     d <- tryCatch(load_parsed(y), error = function(e) NULL)
     if (is.null(d)) next
-    bmi_clean <- clear_bmi_sentinels(d$bmi)
-    div <- detect_bmi_divisor(bmi_clean)
-    if (is.na(div)) next
-    v <- bmi_clean / div
+    anthro <- tryCatch(derive_anthro(d, y), error = function(e) NULL)
+    if (is.null(anthro)) next
+    v <- anthro$bmi
+
+    # Eligibility mirrors the panel's analytic sample minus the BMI screen
+    # itself, so `pct_bmi_missing` is the loss the panel takes.
     elig <- d$state %in% PANEL_FIPS
-    if (!all(is.na(d$age))) elig <- elig & !is.na(d$age) & d$age >= 18
+    if ("age" %in% names(d) && !all(is.na(d$age))) {
+      elig <- elig & !is.na(d$age) & d$age >= 18
+    }
+    if ("pregnant" %in% names(d)) {
+      elig <- elig & (is.na(d$pregnant) | d$pregnant != 1)
+    }
+    elig <- elig & !is.na(d$finalwt) & d$finalwt > 0
+
+    usable <- !is.na(v) & v >= BMI_MIN & v <= BMI_MAX
+    age_v  <- pmin(as.numeric(d$age), AGE_TOPCODE)
+    age_sel <- if (any(elig & usable) && any(elig)) {
+      mean(age_v[elig & usable], na.rm = TRUE) - mean(age_v[elig], na.rm = TRUE)
+    } else NA_real_
+
     rows[[length(rows) + 1]] <- data.frame(
-      year            = y,
-      n_eligible      = sum(elig),
-      pct_bmi_missing = 100 * mean(is.na(v[elig])),
-      pct_implausible = 100 * mean(!is.na(v[elig]) &
-                                   (v[elig] < BMI_MIN | v[elig] > BMI_MAX))
+      year             = y,
+      n_eligible       = sum(elig),
+      pct_bmi_missing  = 100 * mean(is.na(v[elig])),
+      pct_implausible  = 100 * mean(!is.na(v[elig]) &
+                                    (v[elig] < BMI_MIN | v[elig] > BMI_MAX)),
+      age_selection_yr = age_sel
     )
   }
   bind_rows(rows)
+}
+
+# 6. The other panel measures ----------------------------------------------
+# Cross-state summary of mean BMI, height, weight and age by year. These
+# carry the same 2011 design break as prevalence, and mean age carries an
+# additional break at 2013 where CDC stops shipping raw AGE. Reported so the
+# breaks are visible in the series rather than only described in prose.
+AGE_SOURCE_BREAK <- 2013
+
+# Column names are prefixed rather than reused: `summarise()` evaluates
+# sequentially, so a column named `mean_bmi` would shadow the input for every
+# expression after it and turn the SD into NA.
+diag_measures <- function(panel) {
+  panel %>%
+    group_by(year) %>%
+    summarise(
+      n_states      = n(),
+      xs_bmi        = mean(mean_bmi),
+      xs_sd_bmi     = stats::sd(mean_bmi),
+      xs_height_in  = mean(mean_height_in),
+      xs_weight_kg  = mean(mean_weight_kg),
+      xs_age        = mean(mean_age),
+      xs_sd_age     = stats::sd(mean_age),
+      .groups = "drop"
+    )
+}
+
+# 7. Shape of the BMI distribution -----------------------------------------
+# Read from the percentile panel. This is the block the percentile file
+# exists for: prevalence alone cannot distinguish a uniform rightward shift
+# of the BMI distribution from a stretch concentrated in its upper tail, and
+# those imply very different things about what changed. Obesity prevalence is
+# just the mass above a single cut (BMI 30), so both stories can produce the
+# same prevalence path.
+#
+# `p90_p50` against `p50_p10` is the discriminating comparison: under a pure
+# location shift both are flat over time; under a right-tail stretch the
+# upper gap widens while the lower one does not.
+load_percentiles <- function() {
+  p <- file.path(dir_cleaned(), "state_bmi_percentiles.csv")
+  if (!file.exists(p)) return(NULL)
+  utils::read.csv(p, stringsAsFactors = FALSE)
+}
+
+diag_distribution <- function(pct) {
+  wide <- pct %>%
+    filter(percentile %in% c(10, 25, 50, 75, 90, 95)) %>%
+    select(state_fips, year, percentile, bmi) %>%
+    pivot_wider(names_from = percentile, values_from = bmi, names_prefix = "p")
+
+  wide %>%
+    group_by(year) %>%
+    summarise(
+      n_states = n(),
+      p10 = mean(p10), p50 = mean(p50), p90 = mean(p90), p95 = mean(p95),
+      # Spread, and how it splits above vs below the median.
+      p90_p10 = mean(p90 - p10),
+      p50_p10 = mean(p50 - p10),
+      p90_p50 = mean(p90 - p50),
+      .groups = "drop"
+    )
 }
 
 # Report -------------------------------------------------------------------
@@ -273,10 +365,12 @@ write_diagnostics <- function() {
 
   nr <- diag_nonresponse(sort(unique(panel$year)))
   add("## 5. BMI item nonresponse by year", "",
-      paste("Share of adult records in panel states with no usable BMI",
-            "(`pct_bmi_missing`), and share whose BMI falls outside the",
+      paste("Share of eligible adult records in panel states with no usable",
+            "BMI (`pct_bmi_missing`), and share whose BMI falls outside the",
             sprintf("[%g, %g] plausibility window (`pct_implausible`).",
-                    BMI_MIN, BMI_MAX)), "")
+                    BMI_MIN, BMI_MAX),
+            "BMI is the pipeline's own computed BMI, not CDC's `_BMI*`, so",
+            "this is the loss the panel actually takes."), "")
   if (nrow(nr)) {
     add(fmt_table(nr, 2), "",
         paste("A rising nonresponse rate is a comparability threat separate",
@@ -285,8 +379,85 @@ write_diagnostics <- function() {
               "measured prevalence moves even when true prevalence does not.",
               "Nothing in this pipeline corrects for it; the series is",
               "reported as constructed."), "")
+    add(paste("`age_selection_yr` sizes that selection on the one",
+              "characteristic the panel measures: mean age among records that",
+              "survive the BMI screen, minus mean age among all eligible",
+              "adults. It bounds how much the screen reshapes the sample's age",
+              "composition — and therefore how much of `mean_age` is",
+              "selection rather than demography."), "")
+    worst <- nr[which.max(abs(nr$age_selection_yr)), ]
+    add(sprintf(paste("The largest such gap in the series is **%.2f years**",
+                      "(%d, where %.1f%% of eligible adults are lost). Age",
+                      "selection is therefore small in absolute terms even",
+                      "where nonresponse is worst — which bounds this threat",
+                      "for age, and says nothing about selection on weight,",
+                      "which is unobservable for exactly the people who",
+                      "declined to report it."),
+                worst$age_selection_yr, worst$year, worst$pct_bmi_missing), "")
   } else {
     add("Not computable: parsed caches unavailable.", "")
+  }
+
+  meas <- diag_measures(panel)
+  add("## 6. The other panel measures", "",
+      paste("Cross-state summary of the panel's remaining measures: `xs_*` is",
+            "the unweighted mean across states within a year, `xs_sd_*` its",
+            "cross-state SD. Every measure is estimated on the same analytic",
+            "sample as `prev_obese`, so these describe the same respondents."),
+      "", fmt_table(meas, 3), "")
+  add(paste("**These break where prevalence does.** Mean BMI, height, weight and",
+            "age all cross the 2011 design change described in §2, and none is",
+            "any more spliceable across it than prevalence is."), "")
+  add(sprintf(paste("**Mean age carries a second break, at %d.** CDC stops shipping raw",
+                    "`AGE` after 2012 and ships only `_AGE80`, which is collapsed",
+                    "above 80. The panel top-codes age at 80 in *every* year so the",
+                    "two sources are on one scale (`DECISIONS.md` §16), but",
+                    "`_AGE80` is also imputed for non-responders while raw `AGE`",
+                    "was not, and that residual difference is not removed. Treat a",
+                    "level shift in `xs_age` at %d as a measurement change first."),
+              AGE_SOURCE_BREAK, AGE_SOURCE_BREAK), "")
+
+  pct <- load_percentiles()
+  add("## 7. Shape of the BMI distribution", "")
+  if (is.null(pct)) {
+    add("Not computable: `state_bmi_percentiles.csv` not found.", "")
+  } else {
+    dist <- diag_distribution(pct)
+    add(paste("Read from `data/cleaned/state_bmi_percentiles.csv`. Each figure",
+              "is the unweighted mean across states of that state's weighted",
+              "BMI percentile, so each state counts once."), "",
+        fmt_table(dist, 2), "")
+    add(paste("**Why this table exists.** Obesity prevalence is the mass above a",
+              "single cut (BMI 30), so it cannot distinguish a uniform rightward",
+              "shift of the whole distribution from a stretch concentrated in the",
+              "upper tail — the two imply very different things about what",
+              "changed, and can trace out the same prevalence path."), "")
+    add(paste("`p50_p10` against `p90_p50` is the discriminating comparison.",
+              "Under a pure location shift both are flat over time and only the",
+              "levels move. If `p90_p50` widens while `p50_p10` does not, the",
+              "distribution is stretching upward and the gain is concentrated",
+              "among the already-heaviest — which prevalence alone would not",
+              "reveal."), "")
+    if (nrow(dist) >= 2) {
+      f <- dist[which.min(dist$year), ]; l <- dist[which.max(dist$year), ]
+      spans_break <- f$year < BREAK_YEAR && l$year >= BREAK_YEAR
+      add(sprintf(paste("Across %d–%d the mean p50 moves %+.2f BMI units and the",
+                        "mean p90 moves %+.2f; `p50_p10` changes %+.2f while",
+                        "`p90_p50` changes %+.2f.%s"),
+                  f$year, l$year, l$p50 - f$p50, l$p90 - f$p90,
+                  l$p50_p10 - f$p50_p10, l$p90_p50 - f$p90_p50,
+                  if (spans_break) {
+                    paste(" **These endpoints sit on opposite sides of the",
+                          sprintf("%d design break, so read this as description,",
+                                  BREAK_YEAR),
+                          "not as an estimated change** — see §2.")
+                  } else {
+                    ""
+                  }), "")
+    }
+    add(paste("Percentiles carry **no design-based standard error** — see",
+              "`DECISIONS.md` §18 for why, and treat cells with small",
+              "`n_unweighted` accordingly."), "")
   }
 
   add("---", "",

@@ -65,15 +65,19 @@ CDC_MAP_CLAIMS <- data.frame(
 )
 
 # National aggregate -------------------------------------------------------
-# Recomputed from microdata rather than averaged from the state panel, so
-# it is population-weighted by the survey weights themselves.
+# Population-weighted by the survey weights themselves, not averaged across
+# the state panel (DECISIONS.md §11).
 #
-# Cached to data/cleaned/national_prevalence.csv: rebuilding a year's survey
-# design costs ~3.5 minutes for the post-2011 files, and this stage
-# otherwise repeats work build_panel.R already did. Only years absent from
-# the cache are computed.
-path_national <- function() file.path(dir_cleaned(), "national_prevalence.csv")
-
+# These are now PRODUCED BY build_panel.R, from the same design object the
+# state estimates come from, and simply read here. Rebuilding a year's survey
+# design costs 3.5-5 minutes for the post-2011 files, and computing the
+# national figure in this script meant paying that a second time for all 34
+# years to reproduce numbers build_panel.R had already had in hand.
+#
+# The recompute path below is retained as a fallback for years absent from
+# the file -- running validate.R standalone against a panel built by an older
+# version, say. `path_national()` is defined in build_panel.R, which this
+# script sources.
 national_by_year <- function(years, refresh = FALSE) {
   cached <- if (!refresh && file.exists(path_national())) {
     utils::read.csv(path_national(), stringsAsFactors = FALSE)
@@ -83,11 +87,14 @@ national_by_year <- function(years, refresh = FALSE) {
 
   todo <- setdiff(years, cached$year)
   if (length(todo) == 0) {
-    log_msg(sprintf("national estimates: all %d years from cache", length(years)))
+    log_msg(sprintf("national estimates: all %d years read from build_panel output",
+                    length(years)))
     return(cached[cached$year %in% years, ] %>% arrange(year))
   }
-  log_msg(sprintf("national estimates: %d cached, %d to compute",
-                  sum(cached$year %in% years), length(todo)))
+  log_warn(sprintf(paste("national estimates: %d years missing from",
+                         "national_prevalence.csv, recomputing them here (%s).",
+                         "build_panel.R should have written these."),
+                   length(todo), paste(todo, collapse = ", ")))
 
   rows <- list()
   for (y in todo) {
